@@ -23,3 +23,4 @@ Compliance QA Pipeline is an AI-driven, automated workflow designed to analyze v
 2. Install dependencies (e.g., via `uv` or standard package managers as specified in `pyproject.toml`).
 3. Set your environment variables (like API keys) in a `.env` file based on `.env.example`.
 4. Run the API server using FastAPI/Uvicorn or the UI using Streamlit.
+##

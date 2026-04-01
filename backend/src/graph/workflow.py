@@ -14,7 +14,7 @@ def create_graph():
     workflow.add_edge("indexer", "auditor")
     workflow.add_edge("auditor", END)
     
-    return workflow.compile()
+    app = workflow.compile()
     return app
 
 app = create_graph()

@@ -1,20 +1,45 @@
-from tornado.log import app_log
-from langgraph.graph import StateGraph, END
+from functools import partial
+
+from langchain_core.language_models import BaseChatModel
+from langgraph.graph import END, StateGraph
+
+from backend.src.config import Settings, get_settings
+from backend.src.graph.nodes import (
+    GuidelineRetriever,
+    VideoIndexer,
+    audit_content_node,
+    index_video_node,
+)
 from backend.src.graph.state import VideoAuditState
-from backend.src.graph.nodes import index_video_node, audio_content_node
 
-def create_graph():
+
+def create_graph(
+    indexer: VideoIndexer, retriever: GuidelineRetriever, llm: BaseChatModel, k: int = 3
+):
     workflow = StateGraph(VideoAuditState)
-    
-    workflow.add_node("indexer", index_video_node)
-    workflow.add_node("auditor", audio_content_node)
-    
+    workflow.add_node("indexer", partial(index_video_node, indexer=indexer))
+    workflow.add_node("auditor", partial(audit_content_node, retriever=retriever, llm=llm, k=k))
+
     workflow.set_entry_point("indexer")
-
-    workflow.add_edge("indexer", "auditor")
+    workflow.add_conditional_edges(
+        "indexer", lambda s: END if s.get("errors") else "auditor", ["auditor", END]
+    )
     workflow.add_edge("auditor", END)
-    
-    app = workflow.compile()
-    return app
+    return workflow.compile()
 
-app = create_graph()
+
+def build_azure_graph(settings: Settings | None = None):
+    from backend.src.services.azure import (
+        AzureSearchRetriever,
+        build_chat_model,
+        build_vector_store,
+    )
+    from backend.src.services.video_indexer import VideoIndexerService
+
+    settings = settings or get_settings()
+    return create_graph(
+        indexer=VideoIndexerService(settings),
+        retriever=AzureSearchRetriever(build_vector_store(settings)),
+        llm=build_chat_model(settings),
+        k=settings.retrieval_k,
+    )

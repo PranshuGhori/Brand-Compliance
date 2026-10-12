@@ -12,3 +12,7 @@ wheels/
 
 # OS generated files
 .DS_Store
+
+# Tooling
+.ruff_cache/
+.pytest_cache/

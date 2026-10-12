@@ -1,150 +1,122 @@
-import os 
-import json 
 import logging
-import re
-from typing import List, Dict, Any
+from typing import Any, Protocol
 
-from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from lanfchain_community.vectorstores import AzureSearchVectorStore
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import ValidationError
 
-#import state schema
-from backend.src.graph.state import VideoAuditState, ComplianceIssue
+from backend.src.graph.state import AuditReport, VideoAuditState
 
-#import service
-from backend.src.services.azure_video_indexer import VideoIndexerService
+logger = logging.getLogger("frameguard")
 
-#configure logging
-logger = logging.getLogger("brand-guardian")
-logging.basicConfig(
-    level=logging.INFO)
+MAX_QUERY_CHARS = 4000
 
-def index_video_node(state: VideoAuditState) -> Dict[str, Any]:
-    video_url = state.get("video_url")
-    video_id_input = state.get("video_id","vid_demo")
+SYSTEM_PROMPT = """You are a brand safety and advertising compliance officer.
+Audit the video transcript and on-screen text (OCR) against the guidelines below.
+Only report a violation if a guideline below supports it.
 
-    logger.info(f"---- [Node: Indexer] Processing: {video_url}")
+Guidelines:
+{guidelines}
 
-    local_filename = "temp_audit_video.mp4"
-    
-    try:
-        vi_service = VideoIndexerService()
-        
-        if "youtube.com" in video_url or "youtu.be" in video_url:
-            local_path = vi_service.download_youtube_video(video_url, output_path=local_filename)
-        else:
-            raise Exception("Please provide a valid youtube url"
-            )
-        azure_video_id = vi_service.upload_and_index(local_path, video_id_input)
-        logger.info(f"Uploaded video to Azure Video Indexer with ID: {azure_video_id}")
-
-        if os.path.exists(local_path):
-            os.remove(local_path)
-            
-        raw_insights = vi_service.wait_for_processing(azure_video_id)
-        
-        clean_data = vi_service.extract_clean_data(raw_insights)
-        
-        logger.info(f"---- [Node: Indexer] Extraction Complete -----------")
-        
-        return clean_data
-    
-    except Exception as e:
-        logger.error(f"Video Indexer Failed: {e}")
-        return {
-            "errors": [str(e)],
-            "final_status": "FAILED",
-            "transcript": "",
-            "ocr_text": [],
-        }
-        
-def audio_content_node(state: VideoAuditState) -> Dict[str, Any]:
-    logger.info("---- [Node: Audio Content] Processing Audio Content ----")
-    
-    transcript = state.get("transcript", "")
-    if not transcript:
-        logger.warning("No transcript available for audio content analysis")
-        return {
-            "final_status": "FAILED",
-            "final_report": "Audit skipped because no transcript was available",
-        }
-    
-    llm = AzureChatOpenAI(
-        azure_deployment=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
-        openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        temperature=0.0,
-    )
-
-    embeddings = AzureOpenAIEmbeddings(
-        azure_deployment="text-embedding-3-small",
-        openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    )
-
-    vector_store = AzureSearchVectorStore(
-        azure_search_endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
-        azure_search_key=os.getenv("AZURE_SEARCH_API_KEY"),
-        index_name=os.getenv("AZURE_SEARCH_INDEX_NAME"),
-        embedding_function=embeddings.embed_query)
-
-    ocr_text = state.get("ocr_text",[])
-    quert_text = f"{transcript} {''.join(ocr_text)}"
-    docs = vector_store.similarity_search(query=query_text, k=3)
-    retrieved_rules = "\n\n".join([doc.page_content for doc in docs])
-    
-    system_prompt = f"""
-    You are a Brand Safety Compliance Officer.
-    Analyze the following video transcript and OCR text against the retrieved brand safety rules.
-    
-    Retrieved Rules:
-    {retrieved_rules}
-    
-    Instructions:
-    1. Analyze the video transcript and OCR text against the retrieved brand safety rules.
-    2. Identify any violations of the brand safety rules in the video content.
-    3. Return the violations in JSON format with the following structure:
-        {{
-    "compliance_issues": [
-        {{
-            "category": "Claim Validation",
-            "severity": "High|Medium|Low",
-            "description": "Description of the violation"
-        }}
-    ],
-    
-    "status": "PASS|FAIL"
-    "final_report": "Final report of the video content"
+Return a single JSON object, no prose:
+{{
+  "compliance_issues": [
+    {{
+      "category": "short label, e.g. Disclosure, Claim Validation, Ad Specs",
+      "severity": "High | Medium | Low",
+      "description": "what in the video breaks the guideline",
+      "timestamp": "start time from the transcript or OCR, or null",
+      "guideline_quote": "verbatim sentence copied from the guidelines above"
     }}
-    
-    if no violations are found, return an empty list of compliance issues and status as PASS and "compliance_results" to [].
-    """    
-    
-    user_message = f"""
-    VIDEO_METADATA:{state.get("video_metadata",{})}
-    TRANSCRIPT: {transcript}
-    ON-SCREEN TEXT (OCR):{ocr_text}
-    """
-    
+  ],
+  "final_report": "two or three sentence summary of the audit"
+}}
+If there are no violations, return an empty compliance_issues list."""
+
+
+class VideoIndexer(Protocol):
+    def index(self, video_url: str, video_id: str) -> dict[str, Any]: ...
+
+
+class GuidelineRetriever(Protocol):
+    def search(self, query: str, k: int) -> list[str]: ...
+
+
+def is_youtube_url(url: str) -> bool:
+    return any(host in url for host in ("youtube.com/", "youtu.be/"))
+
+
+def index_video_node(state: VideoAuditState, indexer: VideoIndexer) -> dict[str, Any]:
+    video_url = state.get("video_url", "")
+    video_id = state.get("video_id") or "vid_demo"
+    logger.info("[indexer] processing %s", video_url)
+
+    if not is_youtube_url(video_url):
+        return _error(f"not a YouTube URL: {video_url!r}")
     try:
-        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_message)])
-        content = response.content
-        if "```" in content:
-            content = re.search(r"```(.*?)```", content, re.DOTALL).group(1)
-
-
-        audit_data = json.loads(content.strip())
-        return {
-            "compliance_results": audit_data.get("compliance_issues", []),
-            "final_status": audit_data.get("status", "FAILED"),
-            "final_report": audit_data.get("final_report", "no report generated")
-        }
-
+        return indexer.index(video_url, video_id)
     except Exception as e:
-        logger.error(f"system error in auditor node: {str(e)}")
-        
-        logger.error(f"Raw Response: {response.content if 'response' in locals() else 'No Response'}")
-        
+        logger.exception("video indexing failed")
+        return _error(f"video indexing failed: {e}")
+
+
+def audit_content_node(
+    state: VideoAuditState, retriever: GuidelineRetriever, llm: BaseChatModel, k: int = 3
+) -> dict[str, Any]:
+    transcript = state.get("transcript", "")
+    ocr_text = state.get("ocr_text", [])
+    if not transcript and not ocr_text:
+        return _error("no transcript or on-screen text to audit")
+
+    query = f"{transcript}\n{' '.join(ocr_text)}"[:MAX_QUERY_CHARS]
+    try:
+        guidelines = retriever.search(query, k)
+    except Exception as e:
+        logger.exception("guideline retrieval failed")
+        return _error(f"guideline retrieval failed: {e}")
+
+    user_message = (
+        f"VIDEO METADATA: {state.get('video_metadata', {})}\n\n"
+        f"TRANSCRIPT:\n{transcript}\n\n"
+        f"ON-SCREEN TEXT (OCR):\n" + "\n".join(ocr_text)
+    )
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT.format(guidelines="\n\n".join(guidelines))),
+        HumanMessage(content=user_message),
+    ]
+    try:
+        response = llm.invoke(messages)
+    except Exception as e:
+        logger.exception("auditor model call failed")
+        return {**_error(f"auditor model call failed: {e}"), "retrieved_guidelines": guidelines}
+
+    usage = dict(getattr(response, "usage_metadata", None) or {})
+    try:
+        report = parse_report(response.content)
+    except (ValueError, ValidationError) as e:
+        logger.error("invalid auditor output: %s\n%s", e, response.content)
         return {
-            "final_status": "FAILED",
-            "final_report": "Audit skipped because audio content analysis failed",
+            **_error(f"auditor returned invalid JSON: {e}"),
+            "retrieved_guidelines": guidelines,
+            "token_usage": usage,
         }
+
+    return {
+        "retrieved_guidelines": guidelines,
+        "compliance_results": report.compliance_issues,
+        "final_status": "FAIL" if report.compliance_issues else "PASS",
+        "final_report": report.final_report,
+        "token_usage": usage,
+    }
+
+
+def parse_report(content: str) -> AuditReport:
+    """Validate model output, tolerating markdown fences or text around the JSON object."""
+    start, end = content.find("{"), content.rfind("}")
+    if start == -1 or end < start:
+        raise ValueError("no JSON object in model output")
+    return AuditReport.model_validate_json(content[start : end + 1])
+
+
+def _error(message: str) -> dict[str, Any]:
+    return {"errors": [message], "final_status": "ERROR", "final_report": message}

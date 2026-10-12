@@ -1,38 +1,41 @@
 import operator
-from typing import TypedDict, Annotated, List, Dict, Any, Optional
+from typing import Annotated, Any, Literal, TypedDict
 
-#define the schema for single compliance result
+from pydantic import BaseModel, Field
 
-class ComplianceIssue(TypedDict):
+
+class ComplianceIssue(BaseModel):
     category: str
     description: str
-    severity: str
-    timestamp: Optional[str]
+    severity: Literal["High", "Medium", "Low"]
+    timestamp: str | None = None
+    guideline_quote: str = Field(description="Verbatim text of the guideline that is violated.")
 
-#define global graph state    
 
-class VideoAuditState(TypedDict):
-    #video inputs
+class AuditReport(BaseModel):
+    """The JSON object the auditor model must return."""
+
+    compliance_issues: list[ComplianceIssue] = []
+    final_report: str
+
+
+class VideoAuditState(TypedDict, total=False):
+    # inputs
     video_id: str
     video_url: str
 
-    #ingestion and extraction data
-    video_metadata: Optional[Dict[str, Any]]
-    local_file_path: Optional[str]
-    transcript: Optional[str]
-    ocr_text: List[str]
+    # extraction
+    video_metadata: dict[str, Any]
+    transcript: str
+    ocr_text: list[str]
 
-    #analysis output
-    compliance_results: Annotated[List[ComplianceResult], operator.add]
+    # retrieval and analysis
+    retrieved_guidelines: list[str]
+    compliance_results: Annotated[list[ComplianceIssue], operator.add]
+    token_usage: dict[str, int]
 
-    #final report
-    final_status: str
+    # report
+    final_status: Literal["PASS", "FAIL", "ERROR"]
     final_report: str
-    
-    #system observability
-    errors: Annotated[List[str], operator.add]
-    
-    
-    
-    
 
+    errors: Annotated[list[str], operator.add]

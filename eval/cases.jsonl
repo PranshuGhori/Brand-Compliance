@@ -1,0 +1,6 @@
+{"id": "gifted-no-disclosure", "transcript": "[0:00:02] The team at Glow sent me this serum for free and honestly it is my new favourite.", "ocr_text": [], "expected": ["Disclosure"]}
+{"id": "health-claim", "transcript": "[0:00:01] #ad This tea is sponsored by Leafy. [0:00:06] It cures anxiety and is clinically proven to melt fat.", "ocr_text": ["[0:00:06] #ad"], "expected": ["Claim Validation"]}
+{"id": "gifted-and-claim", "transcript": "[0:00:00] Got this cream free from Dermix. [0:00:04] It will cure your eczema in a week.", "ocr_text": [], "expected": ["Disclosure", "Claim Validation"]}
+{"id": "vague-collab-tag", "transcript": "[0:00:00] Loving my new headphones from Sonix, link below.", "ocr_text": ["[0:00:01] #collab"], "expected": ["Disclosure"]}
+{"id": "clean-disclosed", "transcript": "[0:00:00] This video is sponsored by Brightly. [0:00:03] I have used their lamp for a month and like the warm light.", "ocr_text": ["[0:00:00] Paid partnership with Brightly"], "expected": []}
+{"id": "free-shipping-mention", "transcript": "[0:00:00] I bought these boots myself and they arrived with free shipping.", "ocr_text": [], "expected": []}
